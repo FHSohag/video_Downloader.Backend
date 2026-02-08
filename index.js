@@ -3,6 +3,9 @@ const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
+// 🔥 IMPORTANT: expose local binaries to Render/Linux
+process.env.PATH = `${process.env.PATH}:${path.join(__dirname, "bin")}`;
+
 const app = express();
 app.use(express.json());
 
@@ -24,35 +27,57 @@ app.post("/download", (req, res) => {
 
     const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
 
-    // Directly call yt-dlp binary (Linux-compatible)
-    const command = `yt-dlp -f "bv*+ba/b" --merge-output-format mp4 --no-playlist -o "${outputTemplate}" "${url}"`;
+    // ✅ Use bundled yt-dlp + ffmpeg
+    const command = `
+yt-dlp \
+-f "bv*+ba/b" \
+--merge-output-format mp4 \
+--ffmpeg-location "${path.join(__dirname, "bin")}" \
+--no-playlist \
+-o "${outputTemplate}" \
+"${url}"
+`;
 
     exec(command, (error, stdout, stderr) => {
-        if (error) return res.status(500).json({ error: "Download failed", details: stderr || error.message });
+        if (error) {
+            return res.status(500).json({
+                error: "Download failed",
+                details: stderr || error.message,
+            });
+        }
 
-        // Find the latest merged MP4 file
+        // Find latest mp4
         const files = fs.readdirSync(DOWNLOAD_DIR).filter(f => f.endsWith(".mp4"));
-        if (!files.length) return res.status(500).json({ error: "No output file found" });
+        if (!files.length) {
+            return res.status(500).json({ error: "No output file found" });
+        }
 
         const fileName = files[files.length - 1];
         const filePath = path.join(DOWNLOAD_DIR, fileName);
 
-        // Schedule auto-delete
         scheduleDelete(filePath);
 
-        // Return download link
-        return res.json({ download_url: `/file/${encodeURIComponent(fileName)}`, expires_in_minutes: 10 });
+        return res.json({
+            download_url: `/file/${encodeURIComponent(fileName)}`,
+            expires_in_minutes: 10,
+        });
     });
 });
 
 app.get("/file/:name", (req, res) => {
     const fileName = req.params.name;
     const filePath = path.join(DOWNLOAD_DIR, fileName);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File expired or not found" });
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File expired or not found" });
+    }
     res.download(filePath);
 });
 
-app.get("/", (req, res) => res.send("Video Downloader API is running 🚀"));
+app.get("/", (req, res) => {
+    res.send("Video Downloader API is running 🚀");
+});
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
