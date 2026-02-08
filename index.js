@@ -1,7 +1,7 @@
 const express = require("express");
-const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const ytdlp = require("yt-dlp-exec");
 
 const app = express();
 app.use(express.json());
@@ -32,7 +32,7 @@ function scheduleDelete(filePath, delay = 10 * 60 * 1000) {
  * Body: { url: "YouTube URL" }
  * Returns: { download_url: "...", expires_in_minutes: 10 }
  */
-app.post("/download", (req, res) => {
+app.post("/download", async (req, res) => {
     const { url } = req.body;
 
     if (!url) {
@@ -41,23 +41,13 @@ app.post("/download", (req, res) => {
 
     const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
 
-    // yt-dlp command (Linux-compatible)
-    const command = `
-yt-dlp \
--f "bv*+ba/b" \
---merge-output-format mp4 \
---no-playlist \
--o "${outputTemplate}" \
-"${url}"
-`;
-
-    exec(command, (error, stdout, stderr) => {
-        if (error) {
-            return res.status(500).json({
-                error: "Download failed",
-                details: stderr || error.message,
-            });
-        }
+    try {
+        await ytdlp(url, {
+            format: "bv*+ba/b",
+            mergeOutputFormat: "mp4",
+            output: outputTemplate,
+            noPlaylist: true,
+        });
 
         // Find the latest merged MP4 file
         const files = fs
@@ -79,7 +69,9 @@ yt-dlp \
             download_url: `/file/${encodeURIComponent(fileName)}`,
             expires_in_minutes: 10,
         });
-    });
+    } catch (err) {
+        return res.status(500).json({ error: "Download failed", details: err.message });
+    }
 });
 
 /**
