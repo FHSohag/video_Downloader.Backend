@@ -38,7 +38,8 @@ app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    const command = `"${YTDLP_PATH}" -F "${url}" --print-json`;
+    // ✅ Use --dump-json for valid JSON output
+    const command = `"${YTDLP_PATH}" --dump-json "${url}"`;
 
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
         if (error) {
