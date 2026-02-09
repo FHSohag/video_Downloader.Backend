@@ -7,7 +7,7 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 
-// Enable CORS for all origins
+// Enable CORS
 app.use(cors({ origin: "*" }));
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
@@ -17,7 +17,7 @@ const FFMPEG_PATH = path.join(BIN_DIR, "ffmpeg");
 
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
-// -------------------- Make binaries executable --------------------
+// Make binaries executable
 try {
     execSync(`chmod +x "${YTDLP_PATH}"`);
     execSync(`chmod +x "${FFMPEG_PATH}"`);
@@ -26,22 +26,21 @@ try {
     console.error("Failed to chmod binaries:", err);
 }
 
-// Auto-delete downloaded files after 10 minutes
+// Auto-delete files after 10 minutes
 function scheduleDelete(filePath, delay = 10 * 60 * 1000) {
     setTimeout(() => {
         if (fs.existsSync(filePath)) fs.unlink(filePath, () => { });
     }, delay);
 }
 
-// -------------------- CHECK AVAILABLE QUALITIES --------------------
+// -------------------- CHECK AVAILABLE FORMATS --------------------
 app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    // ✅ Use --dump-json for valid JSON output
     const command = `"${YTDLP_PATH}" --dump-json "${url}"`;
 
-    exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp check error:", stderr || error.message);
             return res.status(500).json({
@@ -53,12 +52,17 @@ app.post("/check", (req, res) => {
         try {
             const info = JSON.parse(stdout.trim());
             const formats = info.formats
-                .filter(f => f.format_id && f.ext === "mp4")
+                .filter(f => f.format_id && ["mp4", "webm"].includes(f.ext))
                 .map(f => ({
                     itag: f.format_id,
                     quality: `${f.format} (${(f.filesize || f.filesize_approx) ? ((f.filesize || f.filesize_approx) / 1024 / 1024).toFixed(1) + "MB" : "N/A"})`,
-                    filesize: f.filesize || f.filesize_approx
+                    filesize: f.filesize || f.filesize_approx,
+                    ext: f.ext
                 }));
+
+            if (!formats.length) {
+                return res.status(404).json({ error: "No downloadable MP4/WebM formats available for this video" });
+            }
 
             res.json({ formats });
         } catch (err) {
@@ -68,7 +72,7 @@ app.post("/check", (req, res) => {
     });
 });
 
-// -------------------- DOWNLOAD SELECTED FORMAT --------------------
+// -------------------- DOWNLOAD --------------------
 app.post("/download", (req, res) => {
     const { url, itag } = req.body;
     if (!url || !itag) return res.status(400).json({ error: "URL and itag are required" });
@@ -86,7 +90,7 @@ app.post("/download", (req, res) => {
             });
         }
 
-        const files = fs.readdirSync(DOWNLOAD_DIR).filter(f => f.endsWith(".mp4"));
+        const files = fs.readdirSync(DOWNLOAD_DIR).filter(f => f.endsWith(".mp4") || f.endsWith(".webm"));
         if (!files.length) return res.status(500).json({ error: "No output file found" });
 
         const fileName = files[files.length - 1];
@@ -111,6 +115,5 @@ app.get("/file/:name", (req, res) => {
 // Health check
 app.get("/", (_, res) => res.send("Video Downloader API is running 🚀"));
 
-// Render uses process.env.PORT
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
