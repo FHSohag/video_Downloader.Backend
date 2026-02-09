@@ -33,6 +33,11 @@ function scheduleDelete(filePath, delay = 10 * 60 * 1000) {
     }, delay);
 }
 
+// Sanitize & truncate filenames
+function sanitizeFilename(name) {
+    return name.replace(/[/\\?%*:|"<>]/g, "_").substring(0, 50);
+}
+
 // -------------------- CHECK AVAILABLE FORMATS --------------------
 app.post("/check", (req, res) => {
     const { url } = req.body;
@@ -51,33 +56,25 @@ app.post("/check", (req, res) => {
 
         try {
             const info = JSON.parse(stdout.trim());
-
             const videoOnly = [];
             const audioOnly = [];
             const combined = [];
 
             (info.formats || []).forEach(f => {
                 if (!f.format_id) return;
-
                 const item = {
                     itag: f.format_id,
                     quality: f.format,
                     ext: f.ext,
                     filesize: f.filesize || f.filesize_approx || null
                 };
-
-                if (f.vcodec !== "none" && f.acodec === "none") {
-                    videoOnly.push(item);
-                } else if (f.vcodec === "none" && f.acodec !== "none") {
-                    audioOnly.push(item);
-                } else if (f.vcodec !== "none" && f.acodec !== "none") {
-                    combined.push(item);
-                }
+                if (f.vcodec !== "none" && f.acodec === "none") videoOnly.push(item);
+                else if (f.vcodec === "none" && f.acodec !== "none") audioOnly.push(item);
+                else if (f.vcodec !== "none" && f.acodec !== "none") combined.push(item);
             });
 
-            if (!videoOnly.length && !audioOnly.length && !combined.length) {
+            if (!videoOnly.length && !audioOnly.length && !combined.length)
                 return res.status(404).json({ error: "No downloadable formats found" });
-            }
 
             res.json({ videoOnly, audioOnly, combined });
         } catch (err) {
@@ -92,10 +89,9 @@ app.post("/download", (req, res) => {
     const { url, itag } = req.body;
     if (!url || !itag) return res.status(400).json({ error: "URL and itag are required" });
 
-    // Temp filename for video/audio streams
-    const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
+    const outputTemplate = path.join(DOWNLOAD_DIR, "%(title).50s.%(ext)s"); // truncate title
 
-    // Step 1: Check if selected format is combined or video-only
+    // Get info to check if format is combined or video-only
     const checkCommand = `"${YTDLP_PATH}" --dump-json "${url}"`;
     exec(checkCommand, { maxBuffer: 1024 * 1024 * 20 }, (err, stdout) => {
         if (err) return res.status(500).json({ error: "Failed to fetch video info" });
@@ -106,19 +102,21 @@ app.post("/download", (req, res) => {
         const format = info.formats.find(f => f.format_id == itag);
         if (!format) return res.status(400).json({ error: "Invalid itag" });
 
-        // If format has audio + video, just download
+        // Build download command
+        let command = "";
         if (format.acodec !== "none" && format.vcodec !== "none") {
-            const command = `"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"`;
-            exec(command, { maxBuffer: 1024 * 1024 * 50 }, handleDownload(res));
+            // combined format
+            command = `"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"`;
         } else {
-            // video-only: download video + best audio and merge using ffmpeg
-            const command = `"${YTDLP_PATH}" -f "${itag}+bestaudio" --ffmpeg-location "${FFMPEG_PATH}" --merge-output-format mp4 --no-playlist -o "${outputTemplate}" "${url}"`;
-            exec(command, { maxBuffer: 1024 * 1024 * 50 }, handleDownload(res));
+            // video-only: merge with best audio
+            command = `"${YTDLP_PATH}" -f "${itag}+bestaudio" --ffmpeg-location "${FFMPEG_PATH}" --merge-output-format mp4 --no-playlist -o "${outputTemplate}" "${url}"`;
         }
+
+        exec(command, { maxBuffer: 1024 * 1024 * 50 }, handleDownload(res));
     });
 });
 
-// -------------------- HELPER FOR DOWNLOAD --------------------
+// -------------------- DOWNLOAD HANDLER --------------------
 function handleDownload(res) {
     return (error, stdout, stderr) => {
         if (error) {
@@ -129,10 +127,15 @@ function handleDownload(res) {
             });
         }
 
-        const files = fs.readdirSync(DOWNLOAD_DIR).filter(f => f.endsWith(".mp4") || f.endsWith(".webm"));
+        // Get latest downloaded file
+        const files = fs.readdirSync(DOWNLOAD_DIR)
+            .filter(f => f.endsWith(".mp4") || f.endsWith(".webm"))
+            .map(f => ({ name: f, mtime: fs.statSync(path.join(DOWNLOAD_DIR, f)).mtime.getTime() }))
+            .sort((a, b) => b.mtime - a.mtime);
+
         if (!files.length) return res.status(500).json({ error: "No output file found" });
 
-        const fileName = files[files.length - 1];
+        const fileName = files[0].name;
         const filePath = path.join(DOWNLOAD_DIR, fileName);
 
         scheduleDelete(filePath);
@@ -144,7 +147,7 @@ function handleDownload(res) {
     };
 }
 
-// -------------------- SERVE FILES --------------------
+// Serve files
 app.get("/file/:name", (req, res) => {
     const filePath = path.join(DOWNLOAD_DIR, req.params.name);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File expired or not found" });
