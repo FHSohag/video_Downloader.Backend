@@ -38,7 +38,8 @@ app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    const command = `"${YTDLP_PATH}" --dump-json "${url}"`;
+    // Add browser-like user-agent, geo-bypass, no certificate check
+    const command = `"${YTDLP_PATH}" --geo-bypass --no-check-certificate --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36" --dump-json "${url}"`;
 
     exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
         if (error) {
