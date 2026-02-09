@@ -13,27 +13,59 @@ const FFMPEG_PATH = path.join(BIN_DIR, "ffmpeg");
 
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
+// Auto-delete downloaded files after 10 minutes
 function scheduleDelete(filePath, delay = 10 * 60 * 1000) {
     setTimeout(() => {
         if (fs.existsSync(filePath)) fs.unlink(filePath, () => { });
     }, delay);
 }
 
-app.post("/download", (req, res) => {
+// -------------------- CHECK AVAILABLE QUALITIES --------------------
+app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
+
+    // yt-dlp command to list available formats in JSON
+    const command = `
+chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
+"${YTDLP_PATH}" -F "${url}" --print-json
+`;
+
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            return res.status(500).json({
+                error: "Failed to fetch formats",
+                details: stderr || error.message,
+            });
+        }
+
+        try {
+            const info = JSON.parse(stdout);
+            // Filter only video+audio formats or best
+            const formats = info.formats
+                .filter(f => f.format_id && f.ext === "mp4")
+                .map(f => ({
+                    itag: f.format_id,
+                    quality: `${f.format} (${f.filesize ? (f.filesize / 1024 / 1024).toFixed(1) + "MB" : "N/A"})`,
+                }));
+
+            res.json({ formats });
+        } catch (err) {
+            res.status(500).json({ error: "Failed to parse yt-dlp output", details: err.message });
+        }
+    });
+});
+
+// -------------------- DOWNLOAD SELECTED FORMAT --------------------
+app.post("/download", (req, res) => {
+    const { url, itag } = req.body;
+    if (!url || !itag) return res.status(400).json({ error: "URL and itag are required" });
 
     const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
 
     const command = `
 chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
-"${YTDLP_PATH}" \
--f "bv*+ba/b" \
---merge-output-format mp4 \
---ffmpeg-location "${FFMPEG_PATH}" \
---no-playlist \
--o "${outputTemplate}" \
-"${url}"
+"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"
 `;
 
     exec(command, (error, stdout, stderr) => {
@@ -59,12 +91,14 @@ chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
     });
 });
 
+// Serve downloaded files
 app.get("/file/:name", (req, res) => {
     const filePath = path.join(DOWNLOAD_DIR, req.params.name);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File expired or not found" });
     res.download(filePath);
 });
 
+// Health check
 app.get("/", (_, res) => res.send("Video Downloader API is running 🚀"));
 
 const PORT = process.env.PORT || 5000;
