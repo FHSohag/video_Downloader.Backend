@@ -7,10 +7,8 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 
-// ✅ Enable CORS for all origins
-app.use(cors({
-    origin: "*" // you can restrict to your frontend URL if desired
-}));
+// Enable CORS for all origins
+app.use(cors({ origin: "*" }));
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 const BIN_DIR = path.join(__dirname, "bin");
@@ -31,12 +29,9 @@ app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    const command = `
-chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
-"${YTDLP_PATH}" -F "${url}" --print-json
-`;
+    const command = `"${YTDLP_PATH}" -F "${url}" --print-json`;
 
-    exec(command, (error, stdout, stderr) => {
+    exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
         if (error) {
             return res.status(500).json({
                 error: "Failed to fetch formats",
@@ -45,7 +40,7 @@ chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
         }
 
         try {
-            const info = JSON.parse(stdout);
+            const info = JSON.parse(stdout.trim());
             const formats = info.formats
                 .filter(f => f.format_id && f.ext === "mp4")
                 .map(f => ({
@@ -68,12 +63,9 @@ app.post("/download", (req, res) => {
 
     const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
 
-    const command = `
-chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
-"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"
-`;
+    const command = `"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"`;
 
-    exec(command, (error, stdout, stderr) => {
+    exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
         if (error) {
             return res.status(500).json({
                 error: "Download failed",
@@ -106,5 +98,6 @@ app.get("/file/:name", (req, res) => {
 // Health check
 app.get("/", (_, res) => res.send("Video Downloader API is running 🚀"));
 
+// Render uses process.env.PORT
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
