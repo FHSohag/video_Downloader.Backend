@@ -38,10 +38,9 @@ app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    // Add browser-like user-agent, geo-bypass, no certificate check
     const command = `"${YTDLP_PATH}" --geo-bypass --no-check-certificate --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36" --dump-json "${url}"`;
 
-    exec(command, { maxBuffer: 1024 * 1024 * 15 }, (error, stdout, stderr) => {
+    exec(command, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp check error:", stderr || error.message);
             return res.status(500).json({
@@ -52,20 +51,35 @@ app.post("/check", (req, res) => {
 
         try {
             const info = JSON.parse(stdout.trim());
-            const formats = info.formats
-                .filter(f => f.format_id && ["mp4", "webm"].includes(f.ext))
-                .map(f => ({
-                    itag: f.format_id,
-                    quality: `${f.format} (${(f.filesize || f.filesize_approx) ? ((f.filesize || f.filesize_approx) / 1024 / 1024).toFixed(1) + "MB" : "N/A"})`,
-                    filesize: f.filesize || f.filesize_approx,
-                    ext: f.ext
-                }));
 
-            if (!formats.length) {
-                return res.status(404).json({ error: "No downloadable MP4/WebM formats available for this video" });
+            const videoOnly = [];
+            const audioOnly = [];
+            const combined = [];
+
+            (info.formats || []).forEach(f => {
+                if (!f.format_id) return;
+
+                const item = {
+                    itag: f.format_id,
+                    quality: f.format,
+                    ext: f.ext,
+                    filesize: f.filesize || f.filesize_approx || null
+                };
+
+                if (f.vcodec !== "none" && f.acodec === "none") {
+                    videoOnly.push(item);
+                } else if (f.vcodec === "none" && f.acodec !== "none") {
+                    audioOnly.push(item);
+                } else if (f.vcodec !== "none" && f.acodec !== "none") {
+                    combined.push(item);
+                }
+            });
+
+            if (!videoOnly.length && !audioOnly.length && !combined.length) {
+                return res.status(404).json({ error: "No downloadable formats found" });
             }
 
-            res.json({ formats });
+            res.json({ videoOnly, audioOnly, combined });
         } catch (err) {
             console.error("Parsing yt-dlp output failed:", err.message);
             res.status(500).json({ error: "Failed to parse yt-dlp output", details: err.message });
@@ -78,11 +92,35 @@ app.post("/download", (req, res) => {
     const { url, itag } = req.body;
     if (!url || !itag) return res.status(400).json({ error: "URL and itag are required" });
 
+    // Temp filename for video/audio streams
     const outputTemplate = path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s");
 
-    const command = `"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"`;
+    // Step 1: Check if selected format is combined or video-only
+    const checkCommand = `"${YTDLP_PATH}" --dump-json "${url}"`;
+    exec(checkCommand, { maxBuffer: 1024 * 1024 * 20 }, (err, stdout) => {
+        if (err) return res.status(500).json({ error: "Failed to fetch video info" });
 
-    exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
+        let info;
+        try { info = JSON.parse(stdout.trim()); } catch { return res.status(500).json({ error: "Failed to parse info" }); }
+
+        const format = info.formats.find(f => f.format_id == itag);
+        if (!format) return res.status(400).json({ error: "Invalid itag" });
+
+        // If format has audio + video, just download
+        if (format.acodec !== "none" && format.vcodec !== "none") {
+            const command = `"${YTDLP_PATH}" -f "${itag}" --ffmpeg-location "${FFMPEG_PATH}" --no-playlist -o "${outputTemplate}" "${url}"`;
+            exec(command, { maxBuffer: 1024 * 1024 * 50 }, handleDownload(res));
+        } else {
+            // video-only: download video + best audio and merge using ffmpeg
+            const command = `"${YTDLP_PATH}" -f "${itag}+bestaudio" --ffmpeg-location "${FFMPEG_PATH}" --merge-output-format mp4 --no-playlist -o "${outputTemplate}" "${url}"`;
+            exec(command, { maxBuffer: 1024 * 1024 * 50 }, handleDownload(res));
+        }
+    });
+});
+
+// -------------------- HELPER FOR DOWNLOAD --------------------
+function handleDownload(res) {
+    return (error, stdout, stderr) => {
         if (error) {
             console.error("yt-dlp download error:", stderr || error.message);
             return res.status(500).json({
@@ -103,10 +141,10 @@ app.post("/download", (req, res) => {
             download_url: `/file/${encodeURIComponent(fileName)}`,
             expires_in_minutes: 10,
         });
-    });
-});
+    };
+}
 
-// Serve downloaded files
+// -------------------- SERVE FILES --------------------
 app.get("/file/:name", (req, res) => {
     const filePath = path.join(DOWNLOAD_DIR, req.params.name);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File expired or not found" });
