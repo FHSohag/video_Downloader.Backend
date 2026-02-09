@@ -1,10 +1,16 @@
 const express = require("express");
+const cors = require("cors");
 const { exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
 app.use(express.json());
+
+// ✅ Enable CORS for all origins
+app.use(cors({
+    origin: "*" // you can restrict to your frontend URL if desired
+}));
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 const BIN_DIR = path.join(__dirname, "bin");
@@ -25,7 +31,6 @@ app.post("/check", (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "URL is required" });
 
-    // yt-dlp command to list available formats in JSON
     const command = `
 chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
 "${YTDLP_PATH}" -F "${url}" --print-json
@@ -41,12 +46,12 @@ chmod +x "${YTDLP_PATH}" "${FFMPEG_PATH}" && \
 
         try {
             const info = JSON.parse(stdout);
-            // Filter only video+audio formats or best
             const formats = info.formats
                 .filter(f => f.format_id && f.ext === "mp4")
                 .map(f => ({
                     itag: f.format_id,
-                    quality: `${f.format} (${f.filesize ? (f.filesize / 1024 / 1024).toFixed(1) + "MB" : "N/A"})`,
+                    quality: `${f.format} (${(f.filesize || f.filesize_approx) ? ((f.filesize || f.filesize_approx) / 1024 / 1024).toFixed(1) + "MB" : "N/A"})`,
+                    filesize: f.filesize || f.filesize_approx
                 }));
 
             res.json({ formats });
