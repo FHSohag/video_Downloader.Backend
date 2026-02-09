@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: video-downloader
-    env: node
-    plan: free
-    buildCommand: chmod +x bin/yt-dlp bin/ffmpeg && npm install
-    startCommand: node index.js

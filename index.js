@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { exec } = require("child_process");
+const { exec, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -16,6 +16,15 @@ const YTDLP_PATH = path.join(BIN_DIR, "yt-dlp");
 const FFMPEG_PATH = path.join(BIN_DIR, "ffmpeg");
 
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
+
+// -------------------- Make binaries executable --------------------
+try {
+    execSync(`chmod +x "${YTDLP_PATH}"`);
+    execSync(`chmod +x "${FFMPEG_PATH}"`);
+    console.log("yt-dlp and ffmpeg set as executable ✅");
+} catch (err) {
+    console.error("Failed to chmod binaries:", err);
+}
 
 // Auto-delete downloaded files after 10 minutes
 function scheduleDelete(filePath, delay = 10 * 60 * 1000) {
@@ -33,6 +42,7 @@ app.post("/check", (req, res) => {
 
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
         if (error) {
+            console.error("yt-dlp check error:", stderr || error.message);
             return res.status(500).json({
                 error: "Failed to fetch formats",
                 details: stderr || error.message,
@@ -51,6 +61,7 @@ app.post("/check", (req, res) => {
 
             res.json({ formats });
         } catch (err) {
+            console.error("Parsing yt-dlp output failed:", err.message);
             res.status(500).json({ error: "Failed to parse yt-dlp output", details: err.message });
         }
     });
@@ -67,6 +78,7 @@ app.post("/download", (req, res) => {
 
     exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
         if (error) {
+            console.error("yt-dlp download error:", stderr || error.message);
             return res.status(500).json({
                 error: "Download failed",
                 details: stderr || error.message,
